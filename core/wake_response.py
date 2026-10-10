@@ -159,6 +159,31 @@ def play_wake_ack():
     source = "none"
     file_size = 0
 
+    # Fixed, pre-loaded acknowledgement (for example a one-word "Sir!" at a level that does not clip the
+    # microphone). Short and deterministic, so the node is ready to listen as soon as it ends, and it needs no
+    # LLM or TTS round trip to produce.
+    sample = Config.get_str("wake_ack_sample", "")
+    if sample and os.path.isfile(sample):
+        try:
+            file_size = os.path.getsize(sample)
+        except OSError:
+            pass
+        t_pre = time.perf_counter()
+        try:
+            with _wake_paused():
+                played = platform_audio.play_audio_file(sample)
+        except Exception as e:
+            logger.warning("Failed to play wake ack sample", sample=sample, error=str(e))
+        t_post = time.perf_counter()
+        logger.info(
+            f"wake audio timing | source=sample size={file_size}B "
+            f"pre={int((t_pre - t_enter) * 1000)}ms "
+            f"play={int((t_post - t_pre) * 1000)}ms "
+            f"total={int((t_post - t_enter) * 1000)}ms"
+        )
+        if played:
+            return
+
     if WAKE_AUDIO_FILE.exists():
         source = "cached_llm"
         try:
@@ -293,6 +318,8 @@ def _trim_wav_silence(wav_bytes: bytes, threshold: int = 200) -> bytes:
 
 def fetch_next_wake_response():
     """Fetch the next wake response text and pre-generate audio cache."""
+    if Config.get_str("wake_ack_sample", ""):
+        return  # a fixed acknowledgement sample is configured: nothing to pre-generate
     try:
         provider = get_wake_response_provider()
         if not provider:

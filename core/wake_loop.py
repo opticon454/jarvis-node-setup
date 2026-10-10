@@ -785,7 +785,10 @@ def run_wake_loop(
                 # acks are disabled — the deferred wake-ack (played by
                 # on_llm_fallback inside process_voice_command) covers
                 # the same job without stacking two back-to-back acks.
-                if Config.get_bool("wake_ack_audio_enabled", True):
+                if (
+                    Config.get_bool("wake_ack_audio_enabled", True)
+                    and Config.get_bool("post_listen_ack_enabled", True)
+                ):
                     _t_ack_start = time.monotonic()
                     ack_played = play_processing_ack()
                     logger.info(
