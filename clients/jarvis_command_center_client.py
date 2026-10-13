@@ -14,6 +14,37 @@ logger = JarvisLogger(service="jarvis-node")
 
 T = TypeVar("T", bound=BaseModel)
 
+
+# jarvis-server (the Go rewrite) rejects a /conversation/start body over 1 MiB with 413, which fails every voice turn.
+# A Home Assistant install with a few hundred devices produces a "devices" registry of over a megabyte on its own.
+# The server's prompt only reads these keys, so the others are dropped, largest first, when the context is too big.
+MAX_AGENT_CONTEXT_BYTES = 700_000
+_PROMPT_KEYS = {"light_controls", "device_controls", "floors", "areas"}
+
+
+def fit_agent_context(agent_context: Dict[str, Any], limit: int = MAX_AGENT_CONTEXT_BYTES) -> Dict[str, Any]:
+    """Return ``agent_context`` unchanged when it fits, else a copy without its largest non-prompt entries."""
+    try:
+        if len(json.dumps(agent_context, default=str)) <= limit:
+            return agent_context
+        fitted: Dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in agent_context.items()}
+        while len(json.dumps(fitted, default=str)) > limit:
+            candidates = [
+                (len(json.dumps(val, default=str)), agent, key)
+                for agent, ctx in fitted.items() if isinstance(ctx, dict)
+                for key, val in ctx.items() if key not in _PROMPT_KEYS
+            ]
+            if not candidates:
+                break
+            size, agent, key = max(candidates)
+            del fitted[agent][key]
+            logger.warning("Agent context too large for the server; dropped an entry", agent=agent, key=key, bytes=size)
+        return fitted
+    except Exception as e:  # never let trimming take down a voice turn
+        logger.warning("Could not size agent context", error=str(e))
+        return agent_context
+
+
 class JarvisCommandCenterClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
@@ -633,6 +664,7 @@ class JarvisCommandCenterClient:
                 from services.agent_scheduler_service import get_agent_scheduler_service
                 agent_context = get_agent_scheduler_service().get_aggregated_context()
                 if agent_context:
+                    agent_context = fit_agent_context(agent_context)
                     node_context["agents"] = agent_context
                     logger.debug("Injected agent context", agents=list(agent_context.keys()))
             except Exception as e:
